@@ -1,0 +1,32 @@
+[package]
+name = "weenotify"
+version = "0.1.0"
+authors = ["Matt Chun-Lum <matt@questionable.engineering>"]
+
+[[bin]]
+bench = false
+path = "src/main.rs"
+name = "weenotify"
+
+[profile.release]
+lto = true
+
+[dependencies]
+amq-protocol = "*"
+clap = "*"
+config = { version = "*", default-features = false, features = ["yaml"] }
+error-chain = "*"
+futures = "*"
+lapin-futures = { git = "https://github.com/Geal/lapin.git" }
+lazy_static = "*"
+notify-rust = "3.3.0"
+regex = "*"
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+slog = "2.0.2"
+slog-term = "~2.0.0-4.0"
+slog-async = "2"
+tokio-core = "*"
+tokio-io = "*"
+
