@@ -2,13 +2,12 @@ extern crate amq_protocol;
 #[macro_use]
 extern crate clap;
 extern crate config;
-#[macro_use]
-extern crate error_chain;
 extern crate futures;
 extern crate tokio_core;
 extern crate lapin_futures as lapin;
 #[macro_use]
 extern crate lazy_static;
+extern crate notify_rust;
 extern crate regex;
 #[macro_use]
 extern crate serde_derive;
@@ -19,25 +18,25 @@ extern crate slog_term;
 extern crate slog_async;
 extern crate uuid;
 
-mod cli;
-mod filter;
-mod message;
-
 use std::env;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::collections::HashMap;
 
-use slog::Drain;
-
 use amq_protocol::types::FieldTable;
 use futures::Stream;
 use futures::future::Future;
-use tokio_core::reactor::Core;
-use tokio_core::net::TcpStream;
-use lapin::client::ConnectionOptions;
 use lapin::channel::{BasicConsumeOptions, ExchangeDeclareOptions, QueueDeclareOptions,
                      QueueBindOptions};
+use lapin::client::ConnectionOptions;
+use notify_rust::Notification;
+use slog::Drain;
+use tokio_core::net::TcpStream;
+use tokio_core::reactor::Core;
 use uuid::Uuid;
+
+mod cli;
+mod filter;
+mod message;
 
 fn exit(message: &str) -> ! {
     let err = clap::Error::with_description(message, clap::ErrorKind::InvalidValue);
@@ -59,7 +58,17 @@ fn make_socket_addr(config: &HashMap<String, config::Value>) -> SocketAddr {
 
     match socket_addrs.get(0) {
         Some(addr) => addr.to_owned(),
-        None => exit("Could not determine ip address of host")
+        None => exit("Could not determine ip address of host"),
+    }
+}
+
+fn display_notification(message: &message::Message, timeout: i64) {
+    match Notification::new()
+              .summary(&message.summary())
+              .body(&message.body())
+              .timeout(timeout as i32)
+              .show() {
+        _ => (), // ignore result
     }
 }
 
@@ -83,22 +92,47 @@ fn main() {
         .merge(config::File::new(config_file, config::FileFormat::Yaml))
         .unwrap();
 
-    let connection_info = config.get_table("connection").unwrap();
-    let addr = extract_value(&connection_info, "host");
-    let socket_addrs: Vec<_> = addr.to_socket_addrs()
-        .expect("unable to resolve host")
-        .collect();
-    let socket_addr = socket_addrs.get(0).unwrap();
+    let connection_info = match config.get_table("connection") {
+        Some(info) => info,
+        None => exit("Config missing connection section"),
+    };
 
+    let socket_addr = make_socket_addr(&connection_info);
     let user = extract_value(&connection_info, "user");
     let pass = extract_value(&connection_info, "pass");
     let vhost = extract_value(&connection_info, "vhost");
     let exchange = extract_value(&connection_info, "exchange");
 
-    // let filter = filter::Filter::from_config();
+    let behavior_info = match config.get_table("behavior") {
+        Some(info) => info,
+        None => exit("Config missing behavior section"),
+    };
 
-    debug!(log, "attempting to connect"; "host" => addr, "user" => user.clone());
-    debug!(log, "socket {:?}", socket_addr.clone());
+    let notice_duration = behavior_info
+        .get("notice_duration")
+        .unwrap()
+        .clone()
+        .into_int()
+        .unwrap_or(5000);
+
+    let ignored_senders = behavior_info
+        .get("ignored_senders")
+        .unwrap()
+        .clone()
+        .into_array()
+        .unwrap_or(Vec::new());
+    let ignored_tags = behavior_info
+        .get("ignored_tags")
+        .unwrap()
+        .clone()
+        .into_array()
+        .unwrap_or(Vec::new());
+
+    let filter = filter::Filter::new(&log, &ignored_senders, &ignored_tags);
+
+    debug!(log, "attempting to connect";
+           "host" => format!("{:?}", socket_addr.clone()),
+           "user" => user.clone());
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
@@ -148,7 +182,7 @@ fn main() {
                                                               "my_consumer",
                                                               &consume_options)
                                     })
-                                    .and_then(|stream| {
+                                    .and_then(move |stream| {
                                         info!(stream_log, "established stream"; "queue" => qn);
 
                                         stream.for_each(move |message| {
@@ -160,6 +194,11 @@ fn main() {
                                             debug!(stream_log, "parsed message: {:?}", parsed_message; "sender" => parsed_message.sender());
 
                                             ch.basic_ack(message.delivery_tag);
+
+                                            if !filter.should_filter(&parsed_message) {
+                                                display_notification(&parsed_message, notice_duration);
+                                            }
+
                                             Ok(())
                                         })
                                     })

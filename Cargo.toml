@@ -15,7 +15,6 @@ lto = true
 amq-protocol = "*"
 clap = "*"
 config = { version = "*", default-features = false, features = ["yaml"] }
-error-chain = "*"
 futures = "*"
 lapin-futures = { git = "https://github.com/Geal/lapin.git" }
 lazy_static = "*"

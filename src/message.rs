@@ -26,13 +26,14 @@ impl Message {
         None
     }
 
-    pub fn has_tag(&self, desired: &str) -> bool {
-        for tag in &self.tags {
-            if desired == tag {
-                return true;
-            }
+    pub fn summary(&self) -> String {
+        if self.msg_type == "private" {
+            return self.sender().unwrap_or(String::new());
         }
+        self.channel.clone()
+    }
 
-        false
+    pub fn body(&self) -> String {
+        self.message.clone()
     }
 }

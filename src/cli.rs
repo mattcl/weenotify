@@ -1,4 +1,4 @@
-use clap::{App, Arg, ArgMatches, SubCommand};
+use clap::{App, Arg, ArgMatches};
 
 pub fn get_matches<'a>(default_config_path: &'a str) -> ArgMatches<'a> {
     let app =
@@ -12,8 +12,6 @@ pub fn get_matches<'a>(default_config_path: &'a str) -> ArgMatches<'a> {
                      .default_value(default_config_path)
                      .short("c")
                      .long("config")
-                     .global(true))
-            .subcommand(SubCommand::with_name("start").about("Starts listening for messages"));
-
+                     .global(true));
     app.get_matches()
 }

@@ -1,0 +1,17 @@
+connection:
+  host: 'must.be.hostname.net:5672'
+  user: 'myrabbituser'
+  pass: 'mysecretpasswordinplaintextsigh'
+  vhost: 'myvhost'
+  exchange: 'myfanoutexchange'
+
+behavior:
+  notice_duration: 3000
+  ignored_tags:
+    - irc_nick_back
+    - notify_none
+    - irc_301
+
+  ignored_senders:
+    - sombody
+
