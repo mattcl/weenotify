@@ -29,4 +29,5 @@ slog-term = "~2.0.0-4.0"
 slog-async = "2"
 tokio-core = "*"
 tokio-io = "*"
+uuid = { version = "*", features = ["v4"] }
 

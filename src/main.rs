@@ -13,17 +13,19 @@ extern crate regex;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde_json;
-
 #[macro_use]
 extern crate slog;
 extern crate slog_term;
 extern crate slog_async;
+extern crate uuid;
 
 mod cli;
+mod filter;
 mod message;
 
 use std::env;
-use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::collections::HashMap;
 
 use slog::Drain;
 
@@ -35,10 +37,30 @@ use tokio_core::net::TcpStream;
 use lapin::client::ConnectionOptions;
 use lapin::channel::{BasicConsumeOptions, ExchangeDeclareOptions, QueueDeclareOptions,
                      QueueBindOptions};
+use uuid::Uuid;
 
-pub fn exit(message: &str) -> ! {
+fn exit(message: &str) -> ! {
     let err = clap::Error::with_description(message, clap::ErrorKind::InvalidValue);
     err.exit();
+}
+
+fn extract_value(config: &HashMap<String, config::Value>, key: &str) -> String {
+    match config.get(key).and_then(|v| v.clone().into_str()) {
+        Some(value) => value.to_owned(),
+        None => exit(&format!("Config missing {}", key)),
+    }
+}
+
+fn make_socket_addr(config: &HashMap<String, config::Value>) -> SocketAddr {
+    let raw = extract_value(config, "host");
+    let socket_addrs: Vec<_> = raw.to_socket_addrs()
+        .expect("unable to resolve host")
+        .collect();
+
+    match socket_addrs.get(0) {
+        Some(addr) => addr.to_owned(),
+        None => exit("Could not determine ip address of host")
+    }
 }
 
 fn main() {
@@ -57,23 +79,23 @@ fn main() {
 
     info!(log, "loading config"; "file" => config_file);
     let mut config = config::Config::new();
-    config.merge(config::File::new(config_file, config::FileFormat::Yaml)).unwrap();
+    config
+        .merge(config::File::new(config_file, config::FileFormat::Yaml))
+        .unwrap();
 
-    let connectin_info = config.get_table("connection").unwrap();
-    let addr = connectin_info.get("host").unwrap().clone().into_str();
-    let socket_addrs: Vec<_> = match addr.clone() {
-        Some(addr) => addr.to_socket_addrs().expect("unable to resolve host").collect(),
-        None => exit("Invalid host specified in config"),
-    };
+    let connection_info = config.get_table("connection").unwrap();
+    let addr = extract_value(&connection_info, "host");
+    let socket_addrs: Vec<_> = addr.to_socket_addrs()
+        .expect("unable to resolve host")
+        .collect();
     let socket_addr = socket_addrs.get(0).unwrap();
-    let user = connectin_info.get("user").unwrap().clone().into_str();
-    let pass = connectin_info.get("pass").unwrap().clone().into_str();
-    let vhost = connectin_info.get("vhost").unwrap().clone().into_str();
-    let exchange = connectin_info.get("exchange").unwrap().clone().into_str();
-    let exchange = match exchange {
-        Some(e) => e,
-        None => exit("Exchange not declared in config file"),
-    };
+
+    let user = extract_value(&connection_info, "user");
+    let pass = extract_value(&connection_info, "pass");
+    let vhost = extract_value(&connection_info, "vhost");
+    let exchange = extract_value(&connection_info, "exchange");
+
+    // let filter = filter::Filter::from_config();
 
     debug!(log, "attempting to connect"; "host" => addr, "user" => user.clone());
     debug!(log, "socket {:?}", socket_addr.clone());
@@ -83,18 +105,23 @@ fn main() {
 
     debug!(log, "starting event loop");
 
+    let stream_log = log.new(o!());
+
     core.run(TcpStream::connect(&socket_addr, &handle)
             .and_then(|stream| {
                 let connection_options = ConnectionOptions {
-                    username: user.unwrap(),
-                    password: pass.unwrap(),
-                    vhost: vhost.unwrap(),
+                    username: user,
+                    password: pass,
+                    vhost: vhost,
                     ..Default::default()
                 };
                 lapin::client::Client::connect(stream, &connection_options)
             })
             .and_then(|client| client.create_channel())
             .and_then(|channel| {
+                let uuid = Uuid::new_v4();
+                let queue_name = format!("weenotify-{}", uuid.simple().to_string());
+                let qn = queue_name.clone();
                 let ch = channel.clone();
                 let options = QueueDeclareOptions {
                     passive: false,
@@ -103,34 +130,34 @@ fn main() {
                     auto_delete: true,
                     nowait: false,
                 };
-                channel.queue_declare("weenotify", &options, FieldTable::new())
+                channel.queue_declare(&queue_name, &options, FieldTable::new())
                     .and_then(move |_| {
                         channel.exchange_declare(&exchange,
                                               "fanout",
                                               &ExchangeDeclareOptions::default(),
                                               FieldTable::new())
                             .and_then(move |_| {
-                                channel.queue_bind("weenotify",
+                                channel.queue_bind(&queue_name,
                                                 &exchange,
                                                 "derp",
                                                 &QueueBindOptions::default(),
                                                 FieldTable::new())
                                     .and_then(move |_| {
                                         let consume_options = BasicConsumeOptions::default();
-                                        channel.basic_consume("weenotify",
+                                        channel.basic_consume(&queue_name,
                                                               "my_consumer",
                                                               &consume_options)
                                     })
                                     .and_then(|stream| {
-                                        info!(log, "established stream");
+                                        info!(stream_log, "established stream"; "queue" => qn);
 
                                         stream.for_each(move |message| {
                                             let decoded = std::str::from_utf8(&message.data)
                                                 .unwrap();
-                                            trace!(log, "decoded message: {:?}", decoded);
+                                            trace!(stream_log, "decoded message: {:?}", decoded);
 
                                             let parsed_message: message::Message = serde_json::from_str(decoded).unwrap();
-                                            debug!(log, "parsed message: {:?}", parsed_message; "sender" => parsed_message.sender(), "tag" => parsed_message.has_tag("notify_none"));
+                                            debug!(stream_log, "parsed message: {:?}", parsed_message; "sender" => parsed_message.sender());
 
                                             ch.basic_ack(message.delivery_tag);
                                             Ok(())

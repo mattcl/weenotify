@@ -2,14 +2,14 @@ use regex::Regex;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Message {
-    msg_type: String,
-    highlight: bool,
-    message: String,
-    away: bool,
-    channel: String,
-    server: String,
-    date: String,
-    tags: Vec<String>,
+    pub msg_type: String,
+    pub highlight: bool,
+    pub message: String,
+    pub away: bool,
+    pub channel: String,
+    pub server: String,
+    pub date: String,
+    pub tags: Vec<String>,
 }
 
 impl Message {
@@ -20,7 +20,7 @@ impl Message {
 
         for tag in &self.tags {
             if let Some(caps) = SENDER_MATCHER.captures(tag) {
-                return Some(caps.get(1).unwrap().as_str().to_owned())
+                return Some(caps.get(1).unwrap().as_str().to_owned());
             }
         }
         None
@@ -29,7 +29,7 @@ impl Message {
     pub fn has_tag(&self, desired: &str) -> bool {
         for tag in &self.tags {
             if desired == tag {
-                return true
+                return true;
             }
         }
 
