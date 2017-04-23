@@ -33,6 +33,8 @@ matrix:
             - libdw-dev
             - cmake
             - binutils-dev
+            - dbus
+            - dbus-1-dbg
             - libdbus-1-dev
     # Beta channel
     - os: linux
