@@ -1,0 +1,100 @@
+language: rust
+cache: cargo
+
+env:
+  global:
+    # This will be part of the release tarball
+    # TODO change the project name
+    - PROJECT_NAME=weenotify
+    # TODO comment out this variable if you don't want to build .deb packages on all the targets.
+    - MAKE_DEB=yes
+    # TODO update these two variables. They are part of the .deb package metadata
+    - DEB_MAINTAINER="Matt Chun-Lum <matt@questionable.engineering>"
+    - DEB_DESCRIPTION="Display amqp notifications from weechat"
+
+# AFAICT There are a few ways to set up the build jobs. This one is not the DRYest but I feel is the
+# easiest to reason about.
+# TODO Feel free to remove the channels/targets you don't need
+# NOTE Make *sure* you don't remove a reference (&foo) if you are going to dereference it (*foo)
+matrix:
+  include:
+    # Stable channel
+    - os: linux
+      rust: stable
+      env: TARGET=x86_64-unknown-linux-gnu
+      addons:
+        apt:
+          sources: &x86_unknown_linux_gnu_sources
+            - kalakris-cmake
+          packages: &x86_unknown_linux_gnu
+            # Cross compiler and cross compiled C libraries
+            - gcc-multilib
+            - libelf-dev
+            - libdw-dev
+            - cmake
+            - binutils-dev
+            - libdbus-1-dev
+    # Beta channel
+    - os: linux
+      rust: beta
+      env: TARGET=x86_64-unknown-linux-gnu
+      addons:
+        apt:
+          sources: *x86_unknown_linux_gnu_sources
+          packages: *x86_unknown_linux_gnu
+    # Nightly channel
+    - os: linux
+      rust: nightly
+      env: TARGET=x86_64-unknown-linux-gnu
+      addons:
+        apt:
+          sources: *x86_unknown_linux_gnu_sources
+          packages: *x86_unknown_linux_gnu
+
+  allow_failures:
+    # TODO You might need to allow failures for some target on some channel for some reason. Below
+    # there's one (commented out) example of how to do that. Just change the OS, channel and TARGET
+    # as needed.
+    # - os: linux
+    #   rust: stable
+    #   env: TARGET=x86_64-unknown-linux-gnu
+
+before_install:
+  - export PATH="$PATH:$HOME/.cargo/bin"
+
+install:
+  - bash ci/install.sh
+
+script:
+  - bash ci/script.sh
+
+before_deploy:
+  - bash ci/before_deploy.sh
+
+deploy:
+  provider: releases
+  api_key:
+    secure: "UaBJYbE4vPt0bk6Qg1Xo/DO0HJrky5PUlGF9/ZLIojhMlSyyLtlJfVGazTua2GU/hr8R8II70OdTBCI0p703xyrqPGAQdL+oKJLqqqbK+24vDBQeAGPZdPpz/nKlWZISMjK1E3LxNBXlWj1gXZvoMtt0La/sYlVP1XWkVvjvU0qUntIlRLRLxXqxK4yiYZ4yglRame4+Uc+9EoG6LkUXO+Qq/gBEAWPIVJNQjkUhHe2RjCv41XZh6fDIiUdIUolXJL8d/SE/4fDfBuewufnkBteCvKwKbTYCc7nmPVKKsqnSP3YpMITjYL3Q9V9BvmoDbo1wVeqhBSfY3zYIrGGRlako/VxEoISEfXEGoNXcrXcoQ8DGSQ0lT44dBFovP81iNB+qd98jVk9gCkkNQ1CfT/CLkKXR8eNjjnDG5CDhgSfyJdNes+cG2FLrleiFin6AmWD/q691FyC3mcM3pjY8LpL2FWQFEwQaw1oCZj0p7rx1YIr+58/p1I9JIXyz1Wo++45ECqGFJhk2j/2OS16G8amSPRVI7IbfQJN5QYyBkyPZSEwZCCvTF2tLi1W+VwgoxUip15iYOzdanYKX2iskWUUvEX3HjO3nw56xqVQN68/AQvbb8arcD2Q4oxnNSmnDWtbHdVuuelHKbjRFnP50PClgkjtTKzRb0oF5F2ckz7A="
+  file_glob: true
+  file: ${PROJECT_NAME}-${TRAVIS_TAG}-${TARGET}.*
+  # don't delete the artifacts from previous phases
+  skip_cleanup: true
+  # deploy when a new tag is pushed
+  on:
+    # channel to use to produce the release artifacts
+    # NOTE make sure you only release *once* per target
+    # TODO you may want to pick a different channel
+    condition: $TRAVIS_RUST_VERSION = stable
+    tags: true
+
+branches:
+  only:
+    # Pushes and PR to the master branch
+    - master
+    # IMPORTANT Ruby regex to match tags. Required, or travis won't trigger deploys when a new tag
+    # is pushed. This regex matches semantic versions like v1.2.3-rc4+2016.02.22
+    - /^v\d+\.\d+\.\d+.*$/
+
+notifications:
+  email:
+    on_success: never
