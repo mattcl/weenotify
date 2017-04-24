@@ -130,6 +130,15 @@ fn main() {
 
     let filter = filter::Filter::new(&log, &ignored_senders, &ignored_tags);
 
+    match Notification::new()
+              .summary("weenotify")
+              .body("weenotify started")
+              .timeout(5000)
+              .show() {
+        Ok(_) => (), // ignore result
+        Err(_) => error!(log, "could not display notification")
+    }
+
     debug!(log, "attempting to connect";
            "host" => format!("{:?}", socket_addr.clone()),
            "user" => user.clone());

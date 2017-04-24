@@ -28,7 +28,7 @@ impl Message {
 
     pub fn summary(&self) -> String {
         if self.msg_type == "private" {
-            return self.sender().unwrap_or(String::new());
+            return self.sender().unwrap_or("unknown".to_string());
         }
         self.channel.clone()
     }
