@@ -28,7 +28,7 @@ use futures::future::Future;
 use lapin::channel::{BasicConsumeOptions, ExchangeDeclareOptions, QueueDeclareOptions,
                      QueueBindOptions};
 use lapin::client::ConnectionOptions;
-use notify_rust::Notification;
+use notifier::Notifier;
 use slog::Drain;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Core;
@@ -37,21 +37,40 @@ use uuid::Uuid;
 mod cli;
 mod filter;
 mod message;
+mod notifier;
 
 fn exit(message: &str) -> ! {
     let err = clap::Error::with_description(message, clap::ErrorKind::InvalidValue);
     err.exit();
 }
 
-fn extract_value(config: &HashMap<String, config::Value>, key: &str) -> String {
-    match config.get(key).and_then(|v| v.clone().into_str()) {
+fn extract<F, T>(config: &HashMap<String, config::Value>, key: &str, transform: F) -> T
+    where F: Fn(config::Value) -> Option<T>,
+          T: std::clone::Clone
+{
+    match config.get(key).and_then(|v| transform(v.clone())) {
         Some(value) => value.to_owned(),
         None => exit(&format!("Config missing {}", key)),
     }
 }
 
-fn make_socket_addr(config: &HashMap<String, config::Value>) -> SocketAddr {
-    let raw = extract_value(config, "host");
+fn extract_or_default<F, T>(config: &HashMap<String, config::Value>,
+                            key: &str,
+                            default: T,
+                            f: F)
+                            -> T
+    where F: Fn(config::Value) -> Option<T>,
+          T: std::clone::Clone
+{
+    match config.get(key).and_then(|v| f(v.clone())) {
+        Some(value) => value.to_owned(),
+        None => default,
+    }
+}
+
+fn make_socket_addr(log: &slog::Logger, config: &HashMap<String, config::Value>) -> SocketAddr {
+    let raw = extract(config, "host", |v| v.into_str());
+    debug!(log, "determining ip address"; "hostname" => raw.clone());
     let socket_addrs: Vec<_> = raw.to_socket_addrs()
         .expect("unable to resolve host")
         .collect();
@@ -62,16 +81,6 @@ fn make_socket_addr(config: &HashMap<String, config::Value>) -> SocketAddr {
     }
 }
 
-fn display_notification(message: &message::Message, timeout: i64) {
-    match Notification::new()
-              .summary(&message.summary())
-              .body(&message.body())
-              .timeout(timeout as i32)
-              .show() {
-        _ => (), // ignore result
-    }
-}
-
 fn main() {
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::FullFormat::new(decorator).build().fuse();
@@ -79,7 +88,9 @@ fn main() {
 
     let log = slog::Logger::root(drain, o!());
 
-    let default_config_path_raw = env::home_dir().unwrap().join(".weenotify.yml");
+    let default_config_path_raw = env::home_dir()
+        .expect("could not determine home directory")
+        .join(".weenotify.yml");
     let default_config_path = default_config_path_raw.to_str().unwrap();
     let matches = cli::get_matches(default_config_path);
 
@@ -90,54 +101,44 @@ fn main() {
     let mut config = config::Config::new();
     config
         .merge(config::File::new(config_file, config::FileFormat::Yaml))
-        .unwrap();
+        .expect(&format!("could not load config file: {}", config_file));
 
     let connection_info = match config.get_table("connection") {
         Some(info) => info,
         None => exit("Config missing connection section"),
     };
 
-    let socket_addr = make_socket_addr(&connection_info);
-    let user = extract_value(&connection_info, "user");
-    let pass = extract_value(&connection_info, "pass");
-    let vhost = extract_value(&connection_info, "vhost");
-    let exchange = extract_value(&connection_info, "exchange");
+    let user = extract(&connection_info, "user", |v| v.into_str());
+    let pass = extract(&connection_info, "pass", |v| v.into_str());
+    let vhost = extract(&connection_info, "vhost", |v| v.into_str());
+    let exchange = extract(&connection_info, "exchange", |v| v.into_str());
 
     let behavior_info = match config.get_table("behavior") {
         Some(info) => info,
         None => exit("Config missing behavior section"),
     };
 
-    let notice_duration = behavior_info
-        .get("notice_duration")
-        .unwrap()
-        .clone()
-        .into_int()
-        .unwrap_or(5000);
+    let notice_duration =
+        extract_or_default(&behavior_info, "notice_duration", 5000, |v| v.into_int());
+    let notifier = Notifier::new(&log, notice_duration as i32);
 
-    let ignored_senders = behavior_info
-        .get("ignored_senders")
-        .unwrap()
-        .clone()
-        .into_array()
-        .unwrap_or(Vec::new());
-    let ignored_tags = behavior_info
-        .get("ignored_tags")
-        .unwrap()
-        .clone()
-        .into_array()
-        .unwrap_or(Vec::new());
+    let ignored_channels = extract_or_default(&behavior_info,
+                                              "ignored_channels",
+                                              Vec::new(),
+                                              |v| v.into_array());
+    let ignored_senders = extract_or_default(&behavior_info,
+                                             "ignored_senders",
+                                             Vec::new(),
+                                             |v| v.into_array());
+    let ignored_tags = extract_or_default(&behavior_info,
+                                          "ignored_tags",
+                                          Vec::new(),
+                                          |v| v.into_array());
 
-    let filter = filter::Filter::new(&log, &ignored_senders, &ignored_tags);
+    let socket_addr = make_socket_addr(&log, &connection_info);
+    let filter = filter::Filter::new(&log, &ignored_channels, &ignored_senders, &ignored_tags);
 
-    match Notification::new()
-              .summary("weenotify")
-              .body("weenotify started")
-              .timeout(5000)
-              .show() {
-        Ok(_) => (), // ignore result
-        Err(_) => error!(log, "could not display notification")
-    }
+    notifier.show("weenotify", "weenotify started");
 
     debug!(log, "attempting to connect";
            "host" => format!("{:?}", socket_addr.clone()),
@@ -205,7 +206,7 @@ fn main() {
                                             ch.basic_ack(message.delivery_tag);
 
                                             if !filter.should_filter(&parsed_message) {
-                                                display_notification(&parsed_message, notice_duration);
+                                                notifier.show(&parsed_message.summary(), &parsed_message.body());
                                             }
 
                                             Ok(())
